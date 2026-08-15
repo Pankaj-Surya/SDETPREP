@@ -203,3 +203,124 @@
 - Fix: ensure driver initialization happens strictly in `@BeforeMethod` (not in constructor or `@BeforeClass`, which may run once per class, not once per thread/test)
 - Add null-checks with clear custom exception messages during driver retrieval, so failures point directly to "driver not initialized for this thread" instead of a generic NPE — makes debugging in CI much faster
 - Use try-catch around driver setup/teardown, log thread ID + test name on failure, so flaky/thread-related failures are traceable in parallel CI logs
+
+## Q11. Test suite of 1000+ scripts interrupted mid-run (crash, network failure, manual cancellation) — how do you manage it?
+
+**How each tool actually tracks results**
+- Playwright: after a run, generates `.last-run.json` inside the `test-results` folder, listing which tests failed. You then run `npx playwright test --last-failed` to re-execute only those
+- Selenium/TestNG: after a run, generates `testng-failed.xml` inside the `test-output` folder listing only failed tests; also separately tracks pass/fail/skip in `testng-results.xml`
+
+**Important limitation to know (this is the key insight for this question)**
+- Both of these mechanisms are generated **after a run completes or is gracefully finished** — they rely on the reporter flushing results at the end
+- If the process is abruptly killed (crash/network failure/force-cancel), the reporter may never get to write that file, or it only contains tests that were attempted up to that point — tests that hadn't started yet won't appear anywhere, since neither tool has a built-in "resume from interruption" checkpoint system
+
+**Strategy to handle this properly**
+- Don't rely purely on the tool's own failed-test file for crash scenarios — build an external tracking mechanism
+- Use a custom listener/reporter that logs "test started" and "test completed" to an external file/DB in real time, as each test runs — not just at the end of the whole suite
+- Shard the 1000+ tests into smaller batches/groups (e.g., via CI matrix jobs) — if a crash happens, only that one shard is affected and needs re-running, not the full 1000
+- Design tests to be idempotent (safe to re-run without side effects like duplicate data), so re-running a batch doesn't cause new failures from leftover state
+- Use CI-level retry/resume features (most CI tools like GitHub Actions, Jenkins, GitLab allow re-triggering a specific failed job/shard rather than the whole pipeline)
+
+## Q11a. How do you ensure only remaining, unexecuted tests run — not the whole suite again?
+
+- Maintain a live execution log — write each test's ID/name to a file or DB the moment it starts and again when it finishes, don't wait until suite end
+- After interruption, compute: `remaining tests = full test list − tests marked completed in the log`
+- Run only that remaining list in the next execution (Playwright: pass specific test file/grep patterns; TestNG: generate a custom XML with just the remaining test list)
+- Note: `--last-failed` (Playwright) and `testng-failed.xml` (Selenium) only help with tests that were **attempted and failed** — they won't include tests that never got a chance to run before the crash, so they're not sufficient alone for this scenario
+- For large suites, sharding is the more scalable answer — since each shard tracks its own state independently, a crash only requires re-running the affected shard(s), which is effectively "just the remaining tests" without needing complex tracking logic
+
+## Q12. 100 manual test cases — what's your thought process for deciding automation priority?
+
+**Priority order**
+- Happy path / core flows first — most frequently used, highest business value
+- Critical unhappy/negative flows next — validation errors, common failure scenarios users actually hit
+- Broader negative scenarios after that — less common invalid inputs, error handling
+- Edge cases last — rare boundary conditions, low-frequency scenarios
+
+**Criteria used to decide, beyond just this order**
+- Frequency of execution — tests run every release cycle are higher priority than ones run occasionally
+- Business criticality — flows tied to revenue/compliance/core user journeys (e.g., login, checkout, payments) go first
+- Requirement stability — don't automate flows still under active change; automating unstable features wastes rework effort
+- Manual effort/time cost — highly repetitive, time-consuming manual tests give the best automation ROI
+- Human error proneness — data-heavy or calculation-heavy tests are more reliable when automated than done by hand
+- Regression-prone areas — modules that break often when other things change should be automated early for safety net
+- Low priority/skip — one-off tests, cosmetic/visual-only checks, tests requiring heavy human judgment
+
+## Q13. For Angular/React/Node.js apps — Selenium, Cypress, or Playwright, and why?
+
+**Framework independence**
+- The frontend framework (Angular/React/Vue) doesn't dictate the automation tool — tests interact with the rendered DOM/browser regardless of what framework built it
+- SPAs (Angular/React) do heavy dynamic DOM updates and async rendering, so tools with strong auto-wait and network-idle detection handle them more reliably than tools needing manual explicit waits
+
+**Frontend automation tool choice**
+- Selenium — prefer when you need maximum browser/device coverage (including legacy browsers, real device grids), full custom control over setup, and have time to build that infrastructure
+- Playwright — prefer for rapid development: built-in auto-waiting, fixtures, parallel workers, tracing/debugging tools, multi-language support (JS/TS, Python, Java, .NET), true cross-browser support (Chromium, Firefox, WebKit) including multi-tab/multi-origin scenarios, active development and AI/MCP integration
+- Cypress — good for fast feedback in JS-only projects, but runs inside the browser itself which historically limited multi-tab/multi-origin/true cross-browser testing (though this has improved over versions)
+
+**Backend automation — language/tool matters here for team alignment**
+- Java backend → RestAssured
+- Node.js backend → Playwright's `APIRequestContext`, or supertest/axios with Jest/Mocha
+- Python backend → `requests` library with pytest
+
+**Reasoning to say in interview**
+- "Frontend tool choice depends on team needs — Playwright for speed and modern built-in features, Selenium when broader legacy/device coverage matters. Backend tool choice should match the backend language so devs can review/contribute to API tests easily."
+
+## Q14. How do you disable images on a page to speed up load time?
+
+**Playwright**
+- Intercept network requests using `page.route()`, match image resource types (png, jpg, jpeg, gif, svg, webp) or `resourceType() === 'image'`, and call `route.abort()` to block them
+- For Chromium specifically, you can also pass a launch argument: `--blink-settings=imagesEnabled=false` when launching the browser, which disables images at the browser level rather than intercepting each request
+
+**Selenium**
+- Chrome: set ChromeOptions preference — `chromeOptions.setExperimentalOption("prefs", Map.of("profile.managed_default_content_settings.images", 2))` — value `2` blocks images
+- Firefox: set FirefoxOptions preference — `permissions.default.image = 2`
+
+## Q15. How do you wait for a large file (e.g., 100MB) to finish downloading?
+
+**Playwright (TypeScript)**
+- Listen for the download event: `const [download] = await Promise.all([page.waitForEvent('download'), page.click('#downloadBtn')])`
+- Then call `await download.path()` or `await download.saveAs(path)` — Playwright internally waits for the download stream to fully complete before resolving, so this works correctly even for large files without extra polling logic
+
+**Selenium (Java)**
+- Selenium has no built-in download-completion event, so you need a custom wait mechanism:
+  - Poll the target download directory in a loop with a delay (e.g., every 1–2 seconds)
+  - Check two things each cycle: (1) the final filename exists (not the temporary `.crdownload` extension for Chrome or `.part` for Firefox, which indicates download still in progress), and (2) the file size has stopped increasing between two consecutive checks
+  - Use a `FluentWait` with a reasonable timeout (based on expected file size) polling for these conditions
+  - Only proceed once the final file exists with a stable size and no temp extension present
+
+## Q16. How do you verify specific colors for theme testing (Tailwind/Bootstrap)?
+
+**Correction on how styling actually works**
+- Tailwind/Bootstrap apply styling through utility CSS classes (e.g., `bg-red-500`, `btn-primary`) that map to rules in a generated/compiled stylesheet — not inline `style` attributes (inline styles only appear if arbitrary values are explicitly used)
+
+**Two verification approaches**
+- Class-name assertion — check that the element has the expected class (e.g., `bg-red-500`) present in its `class` attribute; fast, but brittle since it doesn't confirm the actual rendered color and breaks if class naming changes
+- Computed style assertion (more reliable) — read the actual rendered CSS value from the browser, not just the class name
+  - Playwright: `await expect(locator).toHaveCSS('color', 'rgb(255, 0, 0)')` or `page.evaluate(el => getComputedStyle(el).color, element)`
+  - Selenium: `element.getCssValue("color")` or `element.getCssValue("background-color")` — returns the computed RGBA value
+
+**Why computed style is preferred**
+- Tailwind/Bootstrap classes don't always guarantee a specific final visual color, especially with CSS variables, dark mode/theme overrides, or custom theme configs — checking the actual computed value confirms what the user really sees
+
+**Extra for holistic theme testing**
+- For broader visual/theme regression (not just one color), consider screenshot-based visual comparison — Playwright's built-in `expect(page).toHaveScreenshot()`, or third-party tools like Percy/Applitools — to catch layout, spacing, and multi-element theme issues that individual color assertions would miss
+
+## Q17. Can you access an OTP from email through automation?
+
+**Yes, it's possible — here's how**
+
+**Approach 1 — Email API/protocol access**
+- Use IMAP/POP3 or a provider API (Gmail API with OAuth, Outlook Graph API) to programmatically read the inbox
+- Java: JavaMail library; Node.js: `node-imap` or `imap-simple`
+- Poll the inbox after triggering the OTP, fetch the latest email, extract the code from the subject/body using regex, then use it in the test
+
+**Approach 2 — Dedicated test email services (most commonly used in practice)**
+- Services like Mailosaur or Mailinator provide disposable test inboxes with a simple API specifically built for automation — send OTP to a test address, fetch it via API call, extract the code
+- Some of these have direct Playwright/Selenium integration helpers, making this the more CI-friendly option compared to real Gmail/Outlook OAuth setup
+
+**Approach 3 — Bypass via backend (most practical for CI speed)**
+- Ask the dev team to expose a test-only API endpoint or DB query that returns the OTP directly in test/staging environments
+- Avoids the complexity and slowness of real email polling entirely, and is the most common real-world solution when the team controls the backend
+
+**Note to mention in interview**
+- Reading a real personal Gmail/Outlook inbox via automation requires OAuth setup, is slower, and isn't recommended for CI pipelines — prefer a test-specific bypass or a dedicated email testing service for reliability and speed.
