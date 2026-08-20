@@ -85,3 +85,229 @@
 - Assert programmatically that the array is sorted in the expected order (ascending or descending, per spec) — e.g., loop through and confirm each `created_at` is `>=` the previous one, rather than manually comparing values
 - Run this as a repeatable, permanent regression test (not a one-time manual check) — so if a future code change accidentally breaks the sort order, this test catches it immediately instead of relying on "it usually is" from the dev
 - Bonus: also explicitly test the *documented* sort field and order (e.g., confirm it's `created_at descending`, not `id ascending` that just happens to look similar) — this catches subtle contract mismatches that a superficial "looks sorted" check would miss
+
+## Q14. What API validations have you performed in your project?
+
+- Status code validation — confirm the right HTTP code returns for each scenario (200, 201, 400, 401, 404, 500)
+- Response body validation — confirm correct fields, correct values, correct data types
+- Response header validation — confirm headers like `Content-Type`, `Cache-Control`, custom headers are present and correct
+- Schema validation — confirm the response structure matches the agreed contract (all expected fields present, correct types, no unexpected extra/missing fields)
+- Response time validation — confirm the API responds within an acceptable time limit
+- Negative/error validation — confirm invalid inputs return proper error codes and meaningful error messages, not a generic 500
+- Data consistency validation — confirm data returned by the API actually matches what's stored in the DB
+- Security validation — confirm unauthorized/unauthenticated calls are correctly rejected (401/403)
+
+**Real-time example**
+- For a banking `POST /transfer` API, I validate: status code is 201 on success, response body has correct `transactionId` and `status: SUCCESS`, headers include correct `Content-Type: application/json`, invalid account number returns 400 with a clear error message, and finally I cross-check in the DB that the transaction actually got recorded with the correct amount.
+
+## Q15. How do you validate API response status codes?
+
+- Check the returned status code matches what's expected for that specific scenario, not just "did it return something"
+- Different scenarios expect different codes — success (200/201/204), client error (400/401/403/404/409), server error (500)
+
+**Real-time example**
+- `POST /orders` with valid payload → expect `201 Created`
+- `GET /orders/9999` where order doesn't exist → expect `404 Not Found`
+- `POST /orders` with missing required field like `productId` → expect `400 Bad Request`
+- `GET /orders` without an auth token → expect `401 Unauthorized`
+- In RestAssured: `.then().statusCode(201);`
+- In Playwright: `expect(response.status()).toBe(201);`
+
+## Q16. How do you validate API response body and response headers?
+
+**Response body validation**
+- Check specific field values, not just that a response came back
+- Check data types match the contract (e.g., `price` should be a number, not a string)
+- Check nested objects/arrays have correct structure
+- Ignore fields that are expected to change every time (like timestamps, auto-generated IDs) unless specifically testing those
+
+**Real-time example**
+- For `GET /users/101`, I'd assert: `response.body.id == 101`, `response.body.email` is a valid email format, `response.body.status == "ACTIVE"`
+- RestAssured: `.body("id", equalTo(101))`
+- Playwright: `expect(json.id).toBe(101);`
+
+**Response header validation**
+- Check `Content-Type` matches expected format (`application/json`)
+- Check security-related headers where relevant (`Cache-Control`, `X-RateLimit-Remaining`, custom auth headers)
+- Check `Location` header on `201 Created` responses (should point to the newly created resource)
+
+**Real-time example**
+- After `POST /orders` returns 201, I'd check the `Location` header equals `/orders/{newOrderId}` — confirms the API correctly tells the client where to find the new resource
+
+## Q17. Difference between Basic Authentication, Bearer Token, and OAuth
+
+| Type | How it works | Real-time example |
+|---|---|---|
+| Basic Auth | Username and password combined, base64-encoded, sent in the `Authorization` header on every request | Older internal admin tools, some legacy enterprise APIs — simple but insecure over plain HTTP since the credentials are just encoded, not encrypted |
+| Bearer Token | A token (often a JWT) is sent as `Authorization: Bearer <token>` after initial login; server trusts whoever holds the token | Most modern REST APIs — e.g., after logging into a banking app, every subsequent API call carries the token instead of re-sending username/password |
+| OAuth 2.0 | A full authorization framework where a user grants a third-party app limited access without sharing their password; involves an authorization server issuing tokens | "Sign in with Google" on a shopping app — the shopping app never sees your Google password, it just gets a token with limited permission (e.g., access to your email only) |
+
+**Simple way to remember it**
+- Basic Auth = sending your actual password every time (weak)
+- Bearer Token = "here's my ticket, let me in" (token proves who you are after one login)
+- OAuth = "let this app act on my behalf, but only for these specific things" (delegated access, no password sharing)
+
+## Q18. How do you handle authentication in API automation testing?
+
+*(Already covered in detail earlier — quick recap in plain English)*
+- Authenticate once at suite start, store the token, reuse it across dependent tests
+- Refresh the token automatically if it's close to expiring mid-suite, instead of letting tests fail with 401
+- Never hardcode credentials — pull from environment variables or a secrets manager
+- For OAuth-based APIs, use the Client Credentials flow for automation since there's no real user logging in through a UI
+
+## Q19. RestAssured code for a PATCH request
+
+```java
+given()
+    .baseUri("https://api.example.com")
+    .header("Authorization", "Bearer " + accessToken)
+    .contentType(ContentType.JSON)
+    .body("{ \"status\": \"SHIPPED\" }")
+.when()
+    .patch("/orders/{orderId}", orderId)
+.then()
+    .statusCode(200)
+    .body("status", equalTo("SHIPPED"));
+```
+
+**Plain-English explanation**
+- Set the base URL and auth token
+- Set the request body to JSON with only the field you want to update (that's the whole point of PATCH — partial update, not sending the entire object like PUT would)
+- Call `.patch()` with the endpoint and path variable
+- Assert the status code and confirm the specific field actually got updated in the response
+
+## Q20. How do you detect schema drift across 3 downstream consumers?
+
+**What schema drift means in plain English**
+- The API's response structure quietly changes over time (a field renamed, removed, or its type changed) and one or more consuming systems don't get updated to match — they start breaking or silently misreading data
+
+**How to detect it**
+- Maintain a single source-of-truth schema (OpenAPI/JSON Schema) for the API, versioned in a shared repo
+- Run automated schema validation tests on every API response against this schema in CI, on every build — not just once
+- For each of the 3 downstream consumers, maintain a **consumer contract** describing exactly what fields/structure *that consumer* expects (this is the idea behind consumer-driven contract testing, e.g., using Pact)
+- Run all 3 consumer contracts against the API in CI before every deploy — if the API change breaks any one consumer's expected contract, that specific test fails and names exactly which consumer would be affected
+
+**Real-time example**
+- A banking API `GET /account/balance` is consumed by: (1) the mobile app, (2) an internal reporting dashboard, (3) a partner fintech integration
+- If backend renames `availableBalance` to `balanceAvailable`, schema validation catches the structural change immediately, and the specific contract test for the partner fintech integration fails, telling you exactly which consumer will break — instead of finding out only after the partner calls to complain
+
+## Q21. An optional field becomes required — production breaks — but your contract test passed. Why? Also: how do you validate a nested response with dynamic keys?
+
+**Why the contract test missed it**
+- This usually happens because the contract test only validates the fields it explicitly knows about — if the schema definition itself was updated to mark the field "required" but the actual test data used in the contract test always happened to include that field anyway, the test never exercised the "field is missing" case
+- Another common cause: the contract test validates the **response schema** but not the **request schema** — if the field became required on the request side (something the client must now send) and the test always sent it anyway (because that's the "happy path" test data), the break only shows up in production when a real caller doesn't send that field
+- Real example: `POST /orders` used to treat `couponCode` as optional; a backend change quietly makes it required. Contract test's stored request payload already included a `couponCode` field, so the test kept passing — but the mobile app's older version never sends `couponCode` for users without a coupon, so real production calls start failing with 400 errors that nobody caught in testing
+
+**Fix**
+- Contract tests need explicit negative cases too — deliberately omit optional fields and confirm the API still behaves as expected, not just test with a "complete" payload every time
+- Whenever a field's requiredness changes in the schema, add a specific test for the "field missing" scenario, don't just rely on existing happy-path data continuing to work
+
+## Q22. **How to validate a nested response when keys are dynamic**
+
+*Plain English: dynamic keys means the key name itself changes each time (like a date, an ID, or a category name), so you can't hardcode `response.body.someFixedKeyName` in your assertion — you have to write logic to check contents regardless of what the key is called.*
+
+**Real-time example — banking domain**
+- A banking transaction summary API returns balances grouped by account number as the key:
+```json
+{
+  "accountsSummary": {
+    "AC1023456": { "balance": 5000, "currency": "INR" },
+    "AC1023987": { "balance": 12000, "currency": "INR" }
+  }
+}
+```
+- Since account numbers differ per user/test run, you can't assert `response.accountsSummary.AC1023456.balance` directly
+- Instead: iterate over the keys dynamically — `for (String key : response.accountsSummary.keySet())` — and assert generic rules for every entry: `balance` is a number and `>= 0`, `currency` is a valid 3-letter code, etc.
+
+**Real-time example — e-commerce domain**
+- A product catalog API returns pricing grouped dynamically by region:
+```json
+{
+  "pricing": {
+    "IN": { "amount": 999, "currency": "INR" },
+    "US": { "amount": 15, "currency": "USD" }
+  }
+}
+```
+- Region codes vary depending on which regions are configured for that product, so instead of hardcoding `pricing.IN`, loop through all keys present and validate each one follows the same structural rule (amount is positive number, currency is valid ISO code)
+
+## Q23. How do you seed test data without going through the UI?
+
+- Seed data directly via API calls (call the backend's own create endpoints, e.g., `POST /users`) instead of clicking through UI forms — much faster and more reliable
+- Seed data directly into the database using SQL scripts or a test data setup library, when even the API is too slow/complex for bulk data needs
+- Use fake/dummy data generation instead of manually typing values — this is where Faker comes in
+
+**Faker — plain English explanation**
+- Faker is a library (available in Java as `JavaFaker`, in JS as `@faker-js/faker`) that generates realistic-looking random data — names, emails, addresses, phone numbers, dates — so you don't hardcode the same test data everywhere (which causes collisions in parallel runs, as covered in Q5 earlier)
+
+**Real-time example**
+- Instead of hardcoding `email: "test@example.com"` (which fails on the 2nd parallel run due to a uniqueness constraint), use:
+```java
+String email = Faker.instance().internet().emailAddress();
+String name = Faker.instance().name().fullName();
+```
+- Then call `POST /users` with this generated data to seed a fresh, unique user for each test run — no UI interaction, no data collisions across parallel workers
+
+## Q24. Two tests share an auth token. One mutates user state. How do you fix the flake?
+
+**The problem in plain English**
+- Both tests log in as the same user and share the same token — Test A changes something about that user (e.g., updates their email or locks their account), and now Test B, which assumed the user was in its original state, fails unpredictably depending on execution order
+
+**Real-time example**
+- Test A: "update profile name" test changes the shared test user's name to "Updated Name"
+- Test B: "verify default profile name is 'John Doe'" test runs after Test A in parallel and fails, because the name is no longer "John Doe" — not because of a real bug, but because they were fighting over the same user
+
+**Fix**
+- Give each test its own dedicated user (created fresh via API/Faker as in Q22), so no two tests ever share mutable state
+- Each test authenticates with its own token tied to its own user — not a single shared token across the whole suite
+- If creating a user per test is too expensive/slow, at minimum ensure any test that **mutates** state uses its own isolated user, while read-only tests can safely share one
+- Reset/teardown the user's state after each test that mutates it, so it doesn't leak into other tests even if reused
+
+## Q25. How do you test an endpoint that depends on 4 other API calls executing in order?
+
+**Two approaches, both correct — use depending on the goal**
+
+**Approach 1 — Chaining (real integration test)**
+- Call all 4 dependent APIs in the actual required sequence, pass the output of each as input to the next, and finally call the target endpoint
+- Use this when you want to test the *real* end-to-end flow as it happens in production
+
+**Real-time example — e-commerce**
+- To test `POST /orders/{id}/confirm`, you first need: `POST /cart` (add item) → `POST /address` (set shipping address) → `POST /payment` (process payment) → then finally `POST /orders/{id}/confirm`
+- Chain these calls, capturing `cartId`, `addressId`, `paymentId` from each response and passing them into the next call, ending with the confirm call under test
+
+**Approach 2 — Mocking the dependencies**
+- Instead of really calling all 4 APIs, mock/stub their responses so the target endpoint can be tested in isolation, faster and without depending on other services being up
+- Use this when you specifically want to unit-test just the target endpoint's logic, or when the dependent services are slow/unstable/not always available in the test environment
+
+**Real-time example**
+- If testing `POST /orders/{id}/confirm` in isolation, mock the payment service response as `{ "paymentStatus": "SUCCESS" }` directly, so your test doesn't depend on the real payment gateway being available or slow
+
+**Which to prefer**
+- Use chaining for critical E2E business flows (checkout, fund transfer) where the real integration matters
+- Use mocking for faster, more isolated tests of edge cases at the specific endpoint level (e.g., what happens if confirm is called but payment status is "FAILED" — easier to simulate via mock than to force a real payment failure)
+
+## Q26. Your endpoint accepts JSON. You send XML. What's the right failure?
+
+- Correct expected behavior: `400 Bad Request` (or `415 Unsupported Media Type`, which is technically more precise for this specific case) with a clear error message
+- `415 Unsupported Media Type` is the more textbook-correct status code here — it specifically means "the server understands the content type you sent, but refuses to process it because it doesn't support that format for this endpoint"
+
+**Real-time example**
+- `POST /orders` expects `Content-Type: application/json` — if you send XML with `Content-Type: application/xml`, the API should reject it with `415 Unsupported Media Type` and a message like `"Unsupported content type. Expected application/json"`
+- What should NOT happen: a `500 Internal Server Error` — that would mean the server crashed trying to parse XML as JSON instead of gracefully rejecting it, which is a robustness bug worth reporting
+
+## Q27. The API returns 200 with an error in the body — bug or pass?
+
+*(Already covered in detail in Q4 of the earlier set — same answer applies: this should be marked as a fail, since a `200 OK` status while returning an error object violates the API contract and misleads clients that check status codes first.)*
+
+## Q28. Rate limiting kicks in at 100 req/sec — how do you test the 101st request's behavior?
+
+**Correction on tooling**
+- You're right that pure load simulation (sending massive concurrent traffic) is better suited to performance tools like k6, JMeter, or Gatling — but rate limiting specifically (checking that the 101st request in a short window gets rejected) **can absolutely be tested with Playwright/RestAssured too**, since you just need to fire 101 requests quickly, not simulate thousands of virtual users — this is a functional correctness check, not a load/performance test
+
+**Two valid approaches**
+- Functional check (RestAssured/Playwright): fire 101 requests as fast as possible within the rate limit window (e.g., using a loop with parallel/async calls), and assert the first 100 return success while the 101st returns `429 Too Many Requests` with a clear error message — this validates the rate-limiting *logic* is correctly implemented
+- Load/performance check (k6/JMeter): simulate realistic concurrent user traffic at scale to validate rate limiting holds up under real production-like load, and that the system degrades gracefully rather than crashing — this validates *system behavior under load*, a different concern than just logic correctness
+
+**Real-time example**
+- Banking API allows 100 balance-check requests per second per API key. Functional test: fire 101 requests rapidly using a thread pool/async calls, confirm requests 1–100 return `200 OK`, and request 101 returns `429 Too Many Requests` with a `Retry-After` header telling the client when to try again
+- Also worth checking: does the rate limit counter reset correctly after the time window passes — e.g., wait 1 second after hitting the limit, then confirm request 102 succeeds again
