@@ -311,3 +311,166 @@ String name = Faker.instance().name().fullName();
 **Real-time example**
 - Banking API allows 100 balance-check requests per second per API key. Functional test: fire 101 requests rapidly using a thread pool/async calls, confirm requests 1–100 return `200 OK`, and request 101 returns `429 Too Many Requests` with a `Retry-After` header telling the client when to try again
 - Also worth checking: does the rate limit counter reset correctly after the time window passes — e.g., wait 1 second after hitting the limit, then confirm request 102 succeeds again
+
+## Q29. What is the difference between encoded and encrypted?
+
+**Encoded — plain English**
+- Encoding just changes data into a different format so systems can transfer/store it properly — it's **not for security**, it's for compatibility
+- Anyone can decode it instantly, no secret key needed — it's completely reversible by design
+- Example (banking): a JWT auth token's payload is base64-**encoded** — anyone can copy the token, paste it into a site like jwt.io, and instantly read the raw claims inside (user ID, role, expiry) — no password needed to view it, just to view it as intended data
+- Example (e-commerce): a product image URL with special characters gets URL-encoded (`%20` for space) so the browser can process it correctly
+
+**Encrypted — plain English**
+- Encryption scrambles data specifically so **only someone with the correct key** can read it — this is for security/confidentiality
+- Without the decryption key, the data is unreadable gibberish
+
+**Real-time examples**
+- Banking: a customer's account number and CVV stored in the database are **encrypted** — even if someone steals the database file, they can't read the actual numbers without the decryption key
+- E-commerce: when you enter your card details at checkout, they're **encrypted** (via HTTPS/TLS) while traveling from your browser to the server, so nobody intercepting the network traffic can read the raw card number
+
+**Simple way to remember for the interview**
+- Encoded = "changed format for convenience, anyone can reverse it" (like writing in shorthand)
+- Encrypted = "locked with a key, only the key holder can reverse it" (like a locked safe)
+
+## Q30. An endpoint returns user data. How do you verify it doesn't leak other users' data?
+
+**This is testing for a real, serious vulnerability called IDOR (Insecure Direct Object Reference)**
+
+Your instinct is right, here's the full test approach:
+
+- Log in as User A, note their user ID
+- Log in as User B, get User B's valid token
+- Using **User B's token**, try to call the endpoint requesting **User A's ID** in the path — e.g., `GET /users/A123/profile` with User B's auth token
+- Expected correct behavior: API should reject this with `403 Forbidden` (or `404 Not Found` to avoid revealing that the ID even exists) — never return User A's data to User B
+
+**Real-time example — banking**
+- `GET /accounts/{accountId}/statement` — log in as Customer B, then try requesting Customer A's account ID in the URL using Customer B's token
+- If the API returns Customer A's statement (balance, transactions) to Customer B, that's a critical security bug — this is exactly the kind of bug that makes news headlines in banking apps
+
+**Real-time example — e-commerce**
+- `GET /orders/{orderId}` — try fetching another customer's order ID while logged in as yourself
+- If it returns their order details (items, shipping address, payment last 4 digits), that's a data leak
+
+**What to also check**
+- Test with no auth token at all (should be 401)
+- Test with an expired/invalid token (should be 401)
+- Test with a valid token but wrong role/permission level (should be 403)
+- This category of test should be a **standard, mandatory** part of every API test suite that returns user-specific data — not an afterthought
+
+## Q31. Payment gateway is down. How do you continue your test suite?
+
+**Your instinct (mocking + strategy pattern) is good — here's the practical breakdown**
+
+- Use a **mock/stub of the payment gateway** in the test environment that returns realistic responses (success, failure, timeout) without depending on the real third-party gateway being up
+- Design the code so switching between the real gateway and the mock is a simple config change — this is where the strategy/adapter pattern helps, since your application code calls a common interface, and swaps the actual implementation (real vs mock) based on environment
+
+**Real-time example — e-commerce**
+- Payment gateway (like Razorpay/Stripe) is down. Your automated checkout tests use a mocked payment service that returns `{ "paymentStatus": "SUCCESS", "transactionId": "TXN123" }` instantly, so the rest of the checkout flow (cart → address → confirm order) can still be tested end-to-end without waiting on the real gateway
+- You can also simulate failure scenarios on demand — mock returns `{ "paymentStatus": "FAILED" }` to test how your app handles a declined payment, which is actually harder to trigger reliably with a real gateway anyway
+
+**Real-time example — banking**
+- Testing a fund transfer flow where the core banking payment processor is a third-party dependency — use a mocked processor in the test/staging environment so QA isn't blocked whenever that external system has downtime or maintenance windows
+
+**Important caveat to mention**
+- Mocked tests validate your app's logic, but you still need periodic real integration tests against the actual payment gateway (in a sandbox/test mode most gateways provide) to catch real-world drift — mocking alone isn't a complete substitute (ties into Q33 below)
+
+## Q32. How do you mock a streaming response?
+
+**Plain English — what a streaming response is**
+- Instead of getting the whole response at once, data arrives in small chunks over time, while the connection stays open (e.g., live stock price updates, live order tracking status, chat messages)
+
+**How to mock it**
+- Instead of returning one fixed JSON blob immediately, the mock server needs to send data in **chunks**, with a delay between each chunk, simulating how the real streaming server would behave
+- Tools: WireMock supports chunked/delayed responses; for WebSocket-based streaming, tools like `mock-socket` (JS) can simulate a WebSocket server sending messages over time; Node.js `http` server can manually write chunks using `res.write()` multiple times before `res.end()`
+
+**Real-time example — banking**
+- A live "transaction status" feature (e.g., "processing" → "verifying" → "completed") sent via Server-Sent Events (SSE) or WebSocket while a fund transfer is happening — to test the UI updates correctly at each stage, mock the stream to send `"processing"`, wait 1 second, send `"verifying"`, wait 1 second, send `"completed"` — and assert the UI updates correctly after each chunk arrives, not just at the final state
+
+**Real-time example — e-commerce**
+- A live order-tracking map showing the delivery agent's location updating every few seconds — mock the streaming endpoint to send a sequence of fake coordinates over time, and verify the UI marker moves correctly with each update
+
+## Q33. Mock returns success. Real API returns failure. How do you catch this drift?
+
+**The problem in plain English**
+- Your automated tests all pass because they're running against a mock that was set up once and never updated — meanwhile the real API's actual behavior has changed (maybe it now fails under a condition the mock doesn't know about) — so your tests give false confidence
+
+**How to catch it**
+- Never rely on mocks alone — always run a smaller set of tests against the **real API** (in a sandbox/staging environment) periodically, even if the majority of the suite uses mocks for speed
+- Use **contract testing** (as covered earlier, e.g., Pact) — this specifically verifies the mock's assumed behavior actually matches what the real provider does, and fails your CI if they drift apart
+- Schedule periodic **mock validation checks** — a scheduled job that hits the real API with the same test cases used to build the mock, and alerts if the real response no longer matches what the mock assumes
+
+**Real-time example — e-commerce**
+- Your checkout tests mock the payment gateway to always return `SUCCESS`. Meanwhile, the real payment gateway changed its fraud-detection logic and now returns `FAILED` for certain test card numbers you're using. Your mocked tests keep passing, but real checkout in production starts failing for real users. A weekly scheduled test hitting the real sandbox gateway with the same test cases would have caught this drift before it hit production.
+
+## Q34. Your API returns correct data but corrupts the database. How do you catch this in automation?
+
+**The problem in plain English**
+- The API response looks perfectly fine to the caller (correct status code, correct-looking data), but something is wrong in what actually got saved to the database — e.g., wrong data type stored, a related table not updated, a calculation stored incorrectly behind the scenes
+
+**How to catch it**
+- Never validate only the API response — also add a **direct DB-level assertion** after the API call, checking the actual stored data matches expectations (as covered in Q12 — validating UI/API/DB together)
+- Check not just the primary record, but any **related tables** that should also be updated as part of the same operation (referential integrity)
+- Check data types and constraints at the DB level, not just at the API's JSON level (e.g., API says `"balance": 500.00` but DB stored it as an integer `500`, losing decimal precision)
+
+**Real-time example — banking**
+- `POST /transfer` API returns `200 OK` with `{ "status": "SUCCESS" }`, correctly showing the transfer completed. But at the DB level, the source account's balance got deducted correctly, while the destination account's balance was never actually credited due to a bug in the backend transaction logic. A test that only checks the API response would miss this completely — you need a follow-up DB query confirming **both** accounts reflect the correct updated balances after the transfer.
+
+**Real-time example — e-commerce**
+- `POST /orders` returns success and a valid order ID, but the DB's inventory table wasn't decremented for the purchased item — leading to overselling stock later. Catch this by querying the inventory count in DB before and after the order call, and asserting it decreased by the correct quantity.
+
+## Q35. How do you validate a JSON response dynamically?
+
+**Plain English — what "dynamically" means here**
+- Instead of hardcoding checks for specific values (which breaks the moment data changes), you write validation logic that checks **structure and rules** that should hold true regardless of the actual values
+
+**Approaches**
+- **Schema validation** — validate the response against a JSON Schema, confirming required fields exist, correct data types, correct format (e.g., email fields match email pattern) — without caring about the actual values
+- **Rule-based/property assertions** — instead of asserting an exact value, assert a rule: `price >= 0`, `email matches valid email pattern`, `status is one of [ACTIVE, INACTIVE, PENDING]`
+- **Dynamic key traversal** — as covered in Q21, loop through keys/arrays when the structure has variable-length lists or dynamic key names, applying the same rule to every item found
+
+**Real-time example — banking**
+- For `GET /transactions`, instead of hardcoding "the 5th transaction has amount 500," validate dynamically: every transaction in the returned array has a non-negative `amount`, a valid `date` format, and a `type` that's either `CREDIT` or `DEBIT` — this holds true no matter how many transactions come back or in what order
+
+**Real-time example — e-commerce**
+- For `GET /products`, validate dynamically that every product in the list has a `price > 0`, a non-empty `name`, and a valid `category` from an allowed list — rather than hardcoding checks for specific product names that will break the moment the catalog changes
+
+## Q36. How do you chain multiple API requests?
+
+**Plain English**
+- Chaining means calling APIs in sequence where the output/data from one call becomes the input for the next call — simulating a real multi-step business flow
+
+**How to do it (RestAssured/Playwright)**
+- Call API 1, extract the needed value from its response (like an ID or token)
+- Pass that extracted value into API 2's request (path, body, or header)
+- Repeat for as many steps as the flow needs
+- Use path/query parameters, request bodies, or headers to carry forward the values
+
+**Real-time example — banking**
+- Step 1: `POST /accounts` creates a new account, response returns `accountId`
+- Step 2: `POST /accounts/{accountId}/deposit` uses that `accountId` to deposit initial funds
+- Step 3: `GET /accounts/{accountId}/balance` uses the same `accountId` to verify the balance reflects the deposit correctly
+- In RestAssured, you'd store `accountId` from step 1's response using `.extract().path("accountId")`, then reuse that variable in the next calls
+
+**Real-time example — e-commerce**
+- Step 1: `POST /cart` add item, get `cartId`
+- Step 2: `POST /cart/{cartId}/checkout` using that `cartId`, get `orderId`
+- Step 3: `GET /orders/{orderId}` to confirm order was placed correctly with the right items and total
+
+## Q37. What are the main components of an API request?
+
+- **Endpoint/URL** — the address of the resource being accessed (e.g., `https://api.bank.com/v1/accounts/123`)
+- **HTTP Method** — the action being performed (GET, POST, PUT, PATCH, DELETE)
+- **Headers** — metadata about the request, like `Content-Type`, `Authorization` token, `Accept` format
+- **Path parameters** — values embedded directly in the URL path, usually identifying a specific resource (e.g., `123` in `/accounts/123`)
+- **Query parameters** — key-value pairs added after `?` in the URL, usually for filtering/searching (e.g., `/orders?status=SHIPPED&limit=10`)
+- **Request body/payload** — the actual data being sent, usually in JSON format, used with POST/PUT/PATCH (e.g., new order details)
+- **Authentication** — credentials proving who's making the request (Bearer token, API key, Basic Auth)
+
+**Real-time example — e-commerce**
+- `POST https://api.shop.com/v1/orders/456/items?notify=true`
+  - Endpoint: `/orders/456/items`
+  - Method: `POST`
+  - Path parameter: `456` (the order ID)
+  - Query parameter: `notify=true` (whether to send a notification)
+  - Header: `Authorization: Bearer <token>`, `Content-Type: application/json`
+  - Body: `{ "productId": "P789", "quantity": 2 }`
