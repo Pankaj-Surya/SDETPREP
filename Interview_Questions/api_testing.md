@@ -474,3 +474,113 @@ Your instinct is right, here's the full test approach:
   - Query parameter: `notify=true` (whether to send a notification)
   - Header: `Authorization: Bearer <token>`, `Content-Type: application/json`
   - Body: `{ "productId": "P789", "quantity": 2 }`
+ 
+## Q38. How do you handle 50+ APIs efficiently in Postman?
+
+**Your answer is correct — here's the polished version**
+- Organize APIs into **Collections**, then group related requests into **Folders and sub-folders** based on feature/module — keeps things easy to find and maintain instead of one giant flat list
+- Use **collection-level variables** for common values (base URL, common headers) so you're not repeating them in every request
+- Add **pre-request scripts** and **tests scripts** at the folder/collection level for shared logic (like auto-generating a token before requests run)
+
+**Real-time example — banking**
+- A banking Postman collection organized as: `Accounts` folder (create, get balance, close account), `Transfers` folder (internal, external, scheduled), `Cards` folder (block, activate, limits) — each folder has 10–15 related requests, instead of 50+ requests dumped in one list with no structure
+
+**Real-time example — e-commerce**
+- Folders like `Cart`, `Orders`, `Payments`, `Inventory`, `Users` — each containing the relevant CRUD requests for that feature, making it easy for a new team member to find "where's the add-to-cart API" instantly
+
+## Q39. How do you manage different environments (QA, UAT, Production) in Postman?
+
+**Your answer is correct — here's the polished version**
+- Create separate **Environments** in Postman (e.g., `QA`, `UAT`, `Prod`), each holding environment-specific values like `baseUrl`, `apiKey`, `dbConnectionString`
+- Requests reference these using variables (e.g., `{{baseUrl}}/orders`) instead of hardcoded URLs — so switching environments is just selecting a different environment from the dropdown, no need to edit every request
+
+**Real-time example — banking**
+- `QA` environment: `baseUrl = https://qa-api.bank.com`
+- `UAT` environment: `baseUrl = https://uat-api.bank.com`
+- Same collection of "transfer funds" requests runs unchanged against either — just switch the environment dropdown before running, and every request automatically points to the right server
+
+**Real-time example — e-commerce**
+- Testing a "place order" flow — run the exact same collection against QA (with test payment gateway keys) and then against UAT (with sandbox payment gateway keys) just by switching environments, without touching a single request
+
+## Q40. How do you avoid hardcoding values in API requests?
+
+**Your answer is correct — here's the polished/expanded version**
+
+**In Postman**
+- Use built-in dynamic variables for random data — e.g., `{{$guid}}` for a unique ID, `{{$randomEmail}}` for a random email, `{{$timestamp}}` for current time
+- Use variables at different scopes — Collection variables (shared across all requests in a collection), Environment variables (differ per environment), Global variables (shared everywhere), Local variables (single request only)
+
+**In automation code**
+- Use Faker (JavaFaker, `@faker-js/faker`) to generate realistic random data at runtime instead of typing fixed values into test scripts
+- Pull environment-specific config (URLs, keys) from config files or environment variables, not hardcoded strings in the test code
+
+**Real-time example — banking**
+- Instead of hardcoding `accountNumber: "AC1023456"` in every test (which causes duplicate/conflict issues in parallel runs), use `{{$guid}}` in Postman or `Faker.instance().finance().iban()` in code to generate a unique account/customer ID for each test run
+
+**Real-time example — e-commerce**
+- Instead of hardcoding `email: "test@shop.com"` for every "create account" test (fails second time due to duplicate email), generate a fresh random email each run: `{{$randomEmail}}` in Postman, or `faker.internet.email()` in JS automation
+
+## Q41. How would you perform a sequence like GET → POST → PUT in automation?
+
+**Your answer is correct — here's the plain-English expansion with example**
+
+- This is **API chaining** — call APIs in order, extracting data from each response and feeding it into the next call
+
+**Real-time example — banking**
+- `GET /accounts/{id}` — fetch current account details, extract current balance
+- `POST /accounts/{id}/loan-application` — apply for a loan using data pulled from that account (e.g., existing balance/eligibility check), extract the returned `applicationId`
+- `PUT /loan-applications/{applicationId}` — update the application status to `APPROVED` using the `applicationId` from the previous step
+
+**Real-time example — e-commerce**
+- `GET /products/{id}` — fetch product details, confirm it's in stock, extract `productId`
+- `POST /cart` — add that `productId` to cart, extract the returned `cartId`
+- `PUT /cart/{cartId}` — update the quantity of that item in the cart using the `cartId` from the previous step
+
+## Q42. What is the difference between 201 and 204 status codes?
+
+**Slight correction on 204 — it's not specifically tied to DELETE, it means "success but nothing to return"**
+
+- **201 Created** — request succeeded AND a new resource was created; response usually includes the created resource's data (or a `Location` header pointing to it)
+- **204 No Content** — request succeeded, but there's nothing to send back in the response body; commonly used for DELETE (nothing left to return since the resource is gone), but also used for PUT/PATCH when the API chooses not to return the updated resource
+
+**Real-time example — banking**
+- `POST /accounts` (create new account) → `201 Created`, response body includes the new `accountId` and details
+- `DELETE /accounts/{id}/beneficiary/{beneficiaryId}` (remove a beneficiary) → `204 No Content`, nothing more to return since the beneficiary is deleted
+
+**Real-time example — e-commerce**
+- `POST /orders` (place new order) → `201 Created`, response includes `orderId` and order summary
+- `DELETE /cart/{cartId}/items/{itemId}` (remove item from cart) → `204 No Content`, empty response body since the item's gone
+
+## Q43. What is the difference between 401 and 403 status codes?
+
+**Your answer is correct — here's the polished version**
+
+- **401 Unauthorized** — means "I don't know who you are" — you're not authenticated at all, no valid token/credentials provided, or your token expired
+- **403 Forbidden** — means "I know who you are, but you're not allowed to do this" — you're authenticated, but you lack permission for this specific action/resource
+
+**Real-time example — banking**
+- Calling `GET /accounts/{id}/balance` with no token at all, or an expired token → `401 Unauthorized` (server doesn't know who's asking)
+- Calling the same API with a valid token, but you're a regular customer trying to access an admin-only endpoint like `GET /admin/all-accounts` → `403 Forbidden` (server knows who you are, but you're not allowed)
+
+**Real-time example — e-commerce**
+- Trying to view your order history without logging in → `401 Unauthorized`
+- Logged in as a normal customer, but trying to access the seller/admin dashboard API `GET /admin/sales-report` → `403 Forbidden`
+
+## Q44. What is the difference between Query Parameters and Path Parameters?
+
+**Correction — the symbols were swapped in your answer**
+
+- **Path Parameter** — part of the URL path itself, separated by `/`, used to identify a **specific resource**
+- **Query Parameter** — added after a `?` in the URL, used for **filtering, sorting, or optional options**, not for identifying a specific single resource
+
+**Real-time example — banking**
+- Path parameter: `GET /accounts/AC1023456` — the account number `AC1023456` is a path parameter, identifying exactly which account to fetch
+- Query parameter: `GET /accounts/AC1023456/transactions?fromDate=2026-01-01&type=DEBIT` — `fromDate` and `type` are query parameters, filtering the transaction list, not identifying a resource
+
+**Real-time example — e-commerce**
+- Path parameter: `GET /orders/98765` — `98765` identifies exactly which order to fetch
+- Query parameter: `GET /products?category=electronics&sort=priceLowToHigh&page=2` — filters and sorts the product listing, doesn't point to one specific product
+
+**Simple way to remember for the interview**
+- Path parameter = "which specific one" (mandatory, identifies the resource)
+- Query parameter = "how do you want it filtered/sorted" (usually optional, refines a list)
