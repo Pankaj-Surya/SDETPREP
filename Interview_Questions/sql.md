@@ -241,3 +241,161 @@ WHERE salary < (SELECT MAX(salary) FROM Employees);
 
 **Real-time example — e-commerce**
 - Finding the 5th best-selling product by revenue (`ORDER BY total_revenue DESC LIMIT 4,1`) — useful for a "top 5 products" dashboard where you need to identify exactly the 5th-ranked item
+
+## SQL (continued)
+
+## Q11. SQL query: Delete duplicates (keep only one)
+
+**Your logic direction is right, but the JOIN condition needs fixing — you had the WHERE and JOIN condition mixed up**
+
+```sql
+-- Corrected SELECT to identify duplicates first (always verify with SELECT before DELETE)
+SELECT o1.*
+FROM Orders o1
+JOIN Orders o2 ON o1.amount = o2.amount
+WHERE o1.order_id > o2.order_id;
+
+-- Corrected DELETE
+DELETE o1
+FROM Orders o1
+JOIN Orders o2 ON o1.amount = o2.amount
+WHERE o1.order_id > o2.order_id;
+```
+
+**What was off**
+- The join condition (what makes two rows a "matching pair") should go in the `ON` clause — `o1.amount = o2.amount`
+- The filter condition (which one of the pair to delete) goes in `WHERE` — `o1.order_id > o2.order_id`, meaning: for every pair of rows with the same amount, delete the one with the higher order_id, keeping the earliest one
+
+**Important notes**
+- This `DELETE ... JOIN` syntax is **MySQL-specific** — it won't work the same way in SQL Server or Oracle; those need a different approach (e.g., using a CTE with `ROW_NUMBER()`)
+- **Always run the SELECT version first** to see exactly which rows would be deleted, before running the actual DELETE — this is a critical safety habit in real work, especially in production databases
+
+**Real-time example — e-commerce**
+- A checkout retry bug caused duplicate orders with identical amount, customer, and timestamp to be created. Running the SELECT first shows exactly which duplicate rows will be removed (keeping the original, lowest `order_id`), then the DELETE cleans them up safely.
+
+## Q12. SQL query: Customers who never placed an order
+
+**Your query works — one important caveat to know for the interview**
+
+```sql
+SELECT *
+FROM Customers
+WHERE customer_id NOT IN (
+    SELECT customer_id FROM Orders
+);
+```
+
+**The hidden trap with `NOT IN`**
+- If the `Orders.customer_id` column contains even **one NULL value**, `NOT IN` will return **zero rows** for the entire query — silently broken, with no error — because comparing anything to NULL with `NOT IN` evaluates as unknown, not true/false
+- This is a well-known SQL gotcha that's worth mentioning proactively in an interview — it shows depth
+
+**Safer alternative — `NOT EXISTS`**
+```sql
+SELECT *
+FROM Customers c
+WHERE NOT EXISTS (
+    SELECT 1 FROM Orders o WHERE o.customer_id = c.customer_id
+);
+```
+
+**Another safe alternative — `LEFT JOIN` with NULL check**
+```sql
+SELECT c.*
+FROM Customers c
+LEFT JOIN Orders o ON c.customer_id = o.customer_id
+WHERE o.customer_id IS NULL;
+```
+
+**Real-time example — banking**
+- Finding customers who opened an account but never made a single transaction — useful for a "inactive account" report to trigger re-engagement emails or compliance review. Using `NOT EXISTS` here is safer than `NOT IN` in case any transaction record has a NULL customer reference due to a data entry issue.
+
+## Q13. SQL query: Employees earning above company average
+
+**Correction — wrong table and columns were used. Here's the corrected version for the actual question asked:**
+
+```sql
+SELECT *
+FROM Employees
+WHERE salary > (SELECT AVG(salary) FROM Employees);
+```
+
+**Real-time example — banking**
+- Finding all employees earning above the company-wide average salary — useful for HR compensation analysis, or flagging outliers for a pay-equity review
+
+**Real-time example — e-commerce**
+```sql
+SELECT * FROM Products
+WHERE price > (SELECT AVG(price) FROM Products);
+```
+- Find all products priced above the average product price — useful for a "premium products" filter or category
+
+## Q14. SQL query: Top 3 salaries in each department
+
+**Important data-type issue to flag first**
+- The `SALARY` column was created as `varchar(20)` instead of a numeric type like `INT` or `DECIMAL` — this is a real bug worth catching. String comparison doesn't work like number comparison: `'90000' < '145000'` as **strings** actually evaluates incorrectly in lexicographic (character-by-character) order in some contexts, and sorting/comparing salaries as text can silently give wrong results. **Salary should always be stored as a numeric type** (`DECIMAL(10,2)` is ideal for currency/salary to avoid floating-point rounding issues).
+
+**Logic correction on your query — the comparison and threshold were backwards**
+
+Your original query counts how many salaries are **less than** the current row and checks if that count is under 2 — this actually selects the **lowest** salaries, not the top 3, and only compares up to a threshold of 2 (top 2, not top 3).
+
+**Corrected version**
+```sql
+SELECT DEPT, EMP_NAME, CAST(SALARY AS UNSIGNED) AS salary_numeric
+FROM EMPLOYEE e1
+WHERE (
+    SELECT COUNT(*)
+    FROM EMPLOYEE e2
+    WHERE e2.DEPT = e1.DEPT
+      AND CAST(e2.SALARY AS UNSIGNED) > CAST(e1.SALARY AS UNSIGNED)
+) < 3
+ORDER BY DEPT, salary_numeric DESC;
+```
+
+**Plain English of the fix**
+- For each employee, count how many people **in the same department** earn **more** than them
+- If fewer than 3 people earn more, that employee is in the top 3 by definition
+- `CAST(... AS UNSIGNED)` converts the varchar salary to a number for correct comparison (this is a MySQL-specific cast; SQL Server would use `CAST(... AS INT)`, and ideally this cast wouldn't even be needed if the column were the correct numeric type from the start)
+
+**Cleaner modern alternative — using window functions (worth mentioning to sound current)**
+```sql
+SELECT DEPT, EMP_NAME, salary_numeric
+FROM (
+    SELECT DEPT, EMP_NAME, 
+           CAST(SALARY AS UNSIGNED) AS salary_numeric,
+           DENSE_RANK() OVER (PARTITION BY DEPT ORDER BY CAST(SALARY AS UNSIGNED) DESC) AS rnk
+    FROM EMPLOYEE
+) ranked
+WHERE rnk <= 3;
+```
+- `DENSE_RANK()` assigns a rank within each department (partitioned by DEPT), ordered by salary descending — much more readable than a correlated subquery, and this is the pattern most interviewers actually want to see today since window functions are the modern standard for "top N per group" problems
+
+**Real-time example — e-commerce**
+- Same pattern applied to find the top 3 best-selling products by revenue **within each category** — `DENSE_RANK() OVER (PARTITION BY category ORDER BY revenue DESC) <= 3`
+
+## Q15. SQL query: Print odd/even rows
+
+**Important distinction to catch here**
+- Your query checks whether the **EMPNO value itself** is odd/even (`MOD(EMPNO, 2)`) — this only coincidentally works because your `EMPNO` values happen to be sequential (101, 102, 103...)
+- "Print odd/even **rows**" in SQL usually means odd/even by **row position in the result set**, not by the value of a particular column — these are different things, and an interviewer may specifically be testing whether you know the difference
+
+**Correct approach for actual row position — using ROW_NUMBER()**
+```sql
+-- Odd rows (1st, 3rd, 5th... by position)
+SELECT * FROM (
+    SELECT *, ROW_NUMBER() OVER (ORDER BY EMPNO) AS rn
+    FROM EMPLOYEE
+) t
+WHERE MOD(rn, 2) = 1;
+
+-- Even rows (2nd, 4th, 6th... by position)
+SELECT * FROM (
+    SELECT *, ROW_NUMBER() OVER (ORDER BY EMPNO) AS rn
+    FROM EMPLOYEE
+) t
+WHERE MOD(rn, 2) = 0;
+```
+
+**Also note:** since `EMPNO` is stored as `varchar`, `MOD(EMPNO, 2)` relies on MySQL implicitly converting the string to a number — this works for simple numeric-looking strings like `'101'`, but it's fragile and not something to rely on; if `EMPNO` ever contained a non-numeric value or a prefix like `'EMP101'`, this would break or behave unpredictably
+
+**Real-time example — banking**
+- If asked to split a large customer list into two batches for parallel processing (e.g., sending statements), using `ROW_NUMBER()` to assign odd/even rows ensures an even, position-based split regardless of what the actual customer ID values look like — whereas relying on `MOD(customer_id, 2)` would create an uneven split if IDs aren't perfectly sequential (e.g., some IDs deleted/skipped over time).
