@@ -85,6 +85,117 @@ cart.printItemsFixed(); // works correctly
 | Good for object methods that need `this` | ✅ Yes | ❌ No |
 | Good for callbacks that need outer `this` | ❌ No (needs `.bind()`, `that = this`, etc.) | ✅ Yes |
 
+## a. The this Keyword
+
+* Regular Function: The value of this depends entirely on who called it. If you break the connection to the object, this changes.
+* Arrow Function: It doesn't have its own this. It simply adopts the this from the surrounding code where it was written.
+```
+const user = {
+  name: "Alice",
+  // Regular Function
+  regularLog: function() { console.log("Regular:", this.name); },
+  // Arrow Function
+  arrowLog: () => { console.log("Arrow:", this.name); }
+};
+// 1. Regular function looks at 'user' (the caller)
+user.regularLog(); // Output: Regular: Alice
+// 2. Arrow function ignores 'user' and looks at the global scope
+user.arrowLog();   // Output: Arrow: undefined
+```
+------------------------------
+## b. The arguments Object
+
+* Regular Function: Automatically creates a built-in arguments array-like object containing every value you passed in.
+* Arrow Function: Does not have the arguments object. If you want to grab multiple inputs, you must use rest parameters (...args).
+
+```
+// Regular Functionfunction showRegularArgs() {
+  console.log(arguments); // Built-in variable exists automatically
+}
+showRegularArgs("A", "B"); // Output: ['A', 'B']
+// Arrow Functionconst showArrowArgs = () => {
+  console.log(arguments); // ❌ Throws ReferenceError (or grabs global arguments)
+};
+// Fixed Arrow Function using Rest Parametersconst showArrowFixed = (...myArgs) => {
+  console.log(myArgs); // ✅ Works perfectly
+};
+showArrowFixed("A", "B"); // Output: ['A', 'B']
+```
+------------------------------
+## c. Using the new Keyword (Constructors)
+
+* Regular Function: Can be used as a blueprint to manufacture new objects.
+* Arrow Function: Cannot build objects. Trying to do so causes JavaScript to crash.
+
+```
+// Regular Functionfunction Person(name) {
+  this.name = name;
+}const bob = new Person("Bob"); // ✅ Works perfectly
+// Arrow Functionconst Animal = (type) => {
+  this.type = type;
+};const dog = new Animal("Dog"); // ❌ Throws TypeError: Animal is not a constructor
+```
+------------------------------
+## d. The prototype Property
+
+* Regular Function: Automatically comes with a prototype object, which is used to share methods across instances when using new.
+* Arrow Function: Has no prototype property at all because it can never be used with new.
+```
+function regularFn() {}
+console.log(regularFn.prototype); // Output: { constructor: regularFn }
+const arrowFn = () => {};
+console.log(arrowFn.prototype);   // Output: undefined
+```
+------------------------------
+## e. Good for Object Methods
+
+* Regular Function (✅ Yes): Ideal for object methods because this correctly points to the object itself.
+* Arrow Function (❌ No): Terrible for object methods because this skips the object and points to the outer global environment.
+```
+const counter = {
+  count: 10,
+  // ✅ Regular function works because 'this' is 'counter'
+  nextRegular() {
+    this.count++;
+    console.log("Regular count:", this.count);
+  },
+  // ❌ Arrow function fails because 'this' looks outside 'counter'
+  nextArrow: () => {
+    this.count++; 
+    console.log("Arrow count:", this.count);
+  }
+};
+
+counter.nextRegular(); // Output: Regular count: 11
+counter.nextArrow();   // Output: Arrow count: NaN (undefined + 1)
+```
+------------------------------
+## f. Good for Callbacks (Timers, Event Listeners, Loops)
+
+* Regular Function (❌ No): Inside timers like setTimeout, a regular function loses track of your object because it gets called globally. You used to have to save it manually with var self = this.
+* Arrow Function (✅ Yes): Effortlessly passes through into the timer while remembering exactly what this meant in your main method.
+```
+const timerObj = {
+  message: "Time is up!",
+  
+  startWithRegular() {
+    setTimeout(function() {
+      // ❌ Fails: 'this' resets to the global Window inside setTimeout
+      console.log(this.message); 
+    }, 1000);
+  },
+
+  startWithArrow() {
+    setTimeout(() => {
+      // ✅ Works: Arrow function inherits 'this' from startWithArrow()
+      console.log(this.message); 
+    }, 1000);
+  }
+};
+
+timerObj.startWithRegular(); // Output: undefined (after 1 second)
+timerObj.startWithArrow();   // Output: "Time is up!" (after 1 second)
+```
 ---
 
 ## 3. Default Parameters
