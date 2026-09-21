@@ -102,6 +102,23 @@ user.regularLog(); // Output: Regular: Alice
 // 2. Arrow function ignores 'user' and looks at the global scope
 user.arrowLog();   // Output: Arrow: undefined
 ```
+
+```
+const user = {
+  name: "Alice",
+  // Regular Function
+  regularLog: function() { console.log("Regular:", this.name); },
+  // Arrow Function
+  arrowLog: () => { console.log("Arrow:", this.name); }
+};
+
+// 1. Regular function looks at 'user' (the caller)
+user.regularLog(); // Output: Regular: Alice
+
+// 2. Arrow function ignores 'user' and looks at the global scope
+user.arrowLog();   // Output: Arrow: undefined
+
+```
 ------------------------------
 ## b. The arguments Object
 
